@@ -1,4 +1,5 @@
 import contextlib
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,10 +9,16 @@ from app.config import SESSION_SECRET
 from app.db import close_pool, get_pool
 from app.admin import admin_router
 
+logger = logging.getLogger("uvicorn.error")
+
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
-    await get_pool()
+    try:
+        await get_pool()
+        logger.info("Database pool created successfully")
+    except Exception as e:
+        logger.error(f"Database pool creation failed: {e}")
     yield
     await close_pool()
 
