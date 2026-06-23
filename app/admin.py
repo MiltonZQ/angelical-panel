@@ -666,7 +666,7 @@ async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
                 slots_data = data.get("data", data)
                 if isinstance(slots_data, dict):
                     for day, times in slots_data.items():
-                        if day.startswith("20"):
+                        if day == fecha:
                             slots.extend(t.get("start", t.get("time", t)) for t in (times or []))
             logger.info(f"Slots found: {len(slots)}")
             return JSONResponse({"slots": slots})
