@@ -209,7 +209,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
     <input type="password" name="password" placeholder="Contraseña" required />
     <button type="submit">Ingresar</button>
   </form>
-  {error_html}
+  __ERROR__
 </div>
 </body>
 </html>"""
@@ -217,7 +217,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 
 @admin_router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return LOGIN_PAGE.format(error_html="")
+    return LOGIN_PAGE.replace("__ERROR__", "")
 
 
 @admin_router.post("/login", response_class=HTMLResponse)
@@ -234,7 +234,7 @@ async def login_post(request: Request):
         return RedirectResponse(url="/admin/dashboard", status_code=302)
 
     error = "Usuario o contraseña incorrectos"
-    return LOGIN_PAGE.format(error_html=f'<div class="login-err">{error}</div>')
+    return LOGIN_PAGE.replace("__ERROR__", f'<div class="login-err">{error}</div>')
 
 
 @admin_router.post("/logout")
