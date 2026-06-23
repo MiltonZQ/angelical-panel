@@ -542,12 +542,14 @@ async def agendar_page(request: Request):
 var selSlot = null, selHora = null, selTipo = null;
 var VALIDOS = [2,3,5,6];
 var FESTIVOS = ['2026-01-01','2026-01-12','2026-03-23','2026-04-02','2026-04-03','2026-05-01','2026-05-18','2026-06-08','2026-06-15','2026-06-29','2026-07-20','2026-08-07','2026-08-17','2026-10-12','2026-11-02','2026-11-16','2026-12-08','2026-12-25'];
+var VACACIONES_INICIO = '2026-07-23';
+var VACACIONES_FIN = '2026-07-31';
 
-function fechaValida(f) { var d = new Date(f+'T12:00:00'); return VALIDOS.includes(d.getDay()) && !FESTIVOS.includes(f); }
+function fechaValida(f) { var d = new Date(f+'T12:00:00'); if(f>=VACACIONES_INICIO && f<=VACACIONES_FIN) return false; return VALIDOS.includes(d.getDay()) && !FESTIVOS.includes(f); }
 
 function proxValido(desde) {
   var d = new Date(desde+'T12:00:00');
-  for(var i=0;i<30;i++) { var t = new Date(d.getTime()+i*86400000); var s = t.toISOString().split('T')[0]; if(VALIDOS.includes(t.getDay())&&!FESTIVOS.includes(s)) return s; }
+  for(var i=0;i<60;i++) { var t = new Date(d.getTime()+i*86400000); var s = t.toISOString().split('T')[0]; if(s>=VACACIONES_INICIO && s<=VACACIONES_FIN) continue; if(VALIDOS.includes(t.getDay())&&!FESTIVOS.includes(s)) return s; }
   return desde;
 }
 
@@ -556,7 +558,8 @@ var agFecha = document.getElementById('agFecha');
 agFecha.min = hoy;
 agFecha.value = proxValido(hoy);
 agFecha.addEventListener('input', function() {
-  if(!fechaValida(this.value)) { this.value = proxValido(this.value); toast('Solo atendemos martes, miércoles, viernes y sábado','err'); }
+  if(this.value>=VACACIONES_INICIO && this.value<=VACACIONES_FIN) { this.value = proxValido(this.value); toast('Vacaciones del 23 al 31 de julio. Se retoman consultas el 1 de agosto.','err'); }
+  else if(!fechaValida(this.value)) { this.value = proxValido(this.value); toast('Solo atendemos martes, miércoles, viernes y sábado','err'); }
   cargarSlots();
 });
 
