@@ -190,6 +190,8 @@ async def is_pausado(pool: asyncpg.Pool, telefono: str) -> bool:
 # ── Agendar Control ──────────────────────────────────────
 
 async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
+    from datetime import date as dt_date
+    fecha_date = dt_date.fromisoformat(fecha)
     rows = await pool.fetch(
         """
         WITH slots AS (
@@ -209,7 +211,7 @@ async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
         WHERE o.hora IS NULL
         ORDER BY s.hora
         """,
-        fecha,
+        fecha_date,
     )
     return [r["hora"] for r in rows]
 
@@ -223,12 +225,15 @@ async def insert_control(
     hora: str,
     motivo: str,
 ) -> dict:
+    from datetime import date as dt_date, time as dt_time
+    fecha_date = dt_date.fromisoformat(fecha)
+    hora_time = dt_time.fromisoformat(hora)
     row = await pool.fetchrow(
         """
         INSERT INTO citas_control_angelical (nombre, telefono, email, fecha, hora, motivo)
         VALUES ($1, $2, $3, $4::date, $5::time, $6)
         RETURNING id, nombre, fecha, hora
         """,
-        nombre, telefono, email, fecha, hora, motivo,
+        nombre, telefono, email, fecha_date, hora_time, motivo,
     )
     return dict(row)
