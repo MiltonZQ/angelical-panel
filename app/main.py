@@ -3,6 +3,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_SECRET
@@ -44,6 +45,16 @@ app.add_middleware(
 app.include_router(admin_router)
 
 
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/admin/login", status_code=302)
+
+
 @app.get("/health")
 async def health():
     return "ok"
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return ""
