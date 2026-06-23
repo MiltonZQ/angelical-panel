@@ -748,17 +748,25 @@ async def recientes_page(request: Request):
     for c in recs:
         ts = c.get("ultimo_mensaje_at")
         ts_str = ts.strftime("%d/%m %H:%M") if ts else ""
+        tel = c['telefono']
         msg = (c.get("ultimo_mensaje") or "")[:100]
+        pausado = await is_pausado(pool, tel)
+        pause_btn = (
+            '<button class="btn btn-green btn-sm" onclick="togglePausaReciente(\'{}\', false)">▶ Reanudar</button>'.format(tel)
+            if pausado else
+            '<button class="btn btn-red btn-sm" onclick="togglePausaReciente(\'{}\', true)">⏸ Pausar</button>'.format(tel)
+        )
+        pausado_badge = ' <span class="badge badge-red">Pausado</span>' if pausado else ''
         rows += f"""
-<tr class="item" data-tel="{c['telefono']}">
+<tr class="item" data-tel="{tel}">
   <div class="item-info">
-    <div class="item-nombre" style="display:flex;align-items:center;gap:8px">+{clean_tel(c['telefono'])} <span class="badge badge-recentes" style="background:rgba(95,168,127,.12);color:#5fa87f">{c['total_mensajes']} msgs</span></div>
+    <div class="item-nombre" style="display:flex;align-items:center;gap:8px">+{clean_tel(tel)}{pausado_badge} <span class="badge badge-recentes" style="background:rgba(95,168,127,.12);color:#5fa87f">{c['total_mensajes']} msgs</span></div>
     <div class="item-meta">{ts_str}</div>
     {f'<div class="item-msg" style="background:#111;padding:8px 12px;border-radius:8px;margin-top:6px;max-width:450px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa;border-left:3px solid #5fa87f">💬 {msg}</div>' if msg else ''}
   </div>
   <div class="item-actions">
-    <a href="{_wa_link(c['telefono'])}" target="_blank" class="btn btn-wa btn-sm">💬 WhatsApp</a>
-    <button class="btn btn-red btn-sm" onclick="pausarReciente('{c['telefono']}')">⏸ Pausar</button>
+    <a href="{_wa_link(tel)}" target="_blank" class="btn btn-wa btn-sm">💬 WhatsApp</a>
+    {pause_btn}
   </div>
 </tr>"""
     if not rows:
@@ -767,11 +775,13 @@ async def recientes_page(request: Request):
     content = f"<div class=\"card\"><div class=\"card-title\">💬 Conversaciones Recientes (48h)</div>{rows}</div>"
     content += """
 <script>
-async function pausarReciente(tel) {
-  if(!confirm('¿Pausar el bot para '+tel+'?')) return;
-  var r = await fetch('/admin/recientes/'+encodeURIComponent(tel)+'/pausar', {method:'POST'});
+async function togglePausaReciente(tel, pausar) {
+  var accion = pausar ? 'Pausar' : 'Reanudar';
+  if(!confirm('¿'+accion+' el bot para '+tel+'?')) return;
+  var endpoint = pausar ? '/admin/recientes/'+encodeURIComponent(tel)+'/pausar' : '/admin/pausados/'+encodeURIComponent(tel)+'/reanudar';
+  var r = await fetch(endpoint, {method:'POST'});
   var d = await r.json();
-  if(d.ok){toast('⏸ Bot pausado para '+tel);setTimeout(function(){location.reload()},500);}
+  if(d.ok){toast(accion+'ado: '+tel);setTimeout(function(){location.reload()},500);}
   else toast('Error','err');
 }
 </script>"""
