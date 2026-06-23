@@ -203,7 +203,7 @@ async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
             SELECT hora FROM citas_control_angelical
             WHERE fecha::date = $1::date AND estado = 'activa'
         )
-        SELECT SUBSTRING(s.hora::text, 1, 5) AS hora
+        SELECT s.hora::text AS hora_full, SUBSTRING(s.hora::text, 1, 5) AS hora
         FROM slots s
         LEFT JOIN ocupados o ON SUBSTRING(s.hora::text, 1, 5) = o.hora
         WHERE o.hora IS NULL

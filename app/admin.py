@@ -638,9 +638,12 @@ async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
     _require_login(request)
 
     if tipo == "control":
-        pool = await get_pool()
-        horas = await get_control_slots(pool, fecha)
-        return JSONResponse({"slots": horas})
+        try:
+            pool = await get_pool()
+            horas = await get_control_slots(pool, fecha)
+            return JSONResponse({"slots": horas})
+        except Exception as e:
+            return JSONResponse({"slots": [], "error": str(e)})
 
     # tipo == primera → Cal.com API
     try:
