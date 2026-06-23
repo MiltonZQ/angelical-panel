@@ -9,13 +9,15 @@ from app.db import (
     get_pool,
     dashboard_metrics,
     daily_chart,
-    motivos_chart,
+    citas_chart,
     get_citas,
     cancelar_cita,
     get_escalados,
     liberar_escalado,
     get_pausados,
     reanudar_bot,
+    pausar_bot,
+    is_pausado,
     get_recientes,
     get_control_slots,
     insert_control,
@@ -251,7 +253,7 @@ async def dashboard(request: Request):
     pool = await get_pool()
     metrics = await dashboard_metrics(pool)
     daily = await daily_chart(pool)
-    motivos = await motivos_chart(pool)
+    citas_daily = await citas_chart(pool)
 
     kpis = f"""
 <div class="kpi-grid">
@@ -268,7 +270,7 @@ async def dashboard(request: Request):
   <div class="kpi-card"><div class="kpi-num" style="color:#888">{fmt(metrics['abandonadas'])}</div><div class="kpi-label">Abandonaron Conv.</div></div>
 </div>"""
 
-    chart_js = _render_daily_chart(daily, motivos)
+    chart_js = _render_charts(daily, citas_daily)
     content = f"{kpis}{chart_js}"
     return HTMLResponse(_shell(content, request, "dashboard"))
 
@@ -281,11 +283,11 @@ def fmt(val):
     return str(val)
 
 
-def _render_daily_chart(daily: list[dict], motivos: list[dict]) -> str:
+def _render_charts(daily: list[dict], citas_daily: list[dict]) -> str:
     dias_json = [d["dia"] for d in daily]
     msgs_json = [d["mensajes"] for d in daily]
-    motivos_labels = [m["motivo"][:20] for m in motivos]
-    motivos_vals = [m["total"] for m in motivos]
+    citas_dias = [c["dia"] for c in citas_daily]
+    citas_vals = [c["citas"] for c in citas_daily]
 
     return f"""
 <div class="chart-container">
@@ -293,8 +295,8 @@ def _render_daily_chart(daily: list[dict], motivos: list[dict]) -> str:
   <div class="chart-box" id="chart-diario"></div>
 </div>
 <div class="chart-container">
-  <div class="card-title">💊 Motivos de Consulta más Frecuentes</div>
-  <div class="chart-box" id="chart-motivos"></div>
+  <div class="card-title">📅 Citas Agendadas por Día (próximos 7 días)</div>
+  <div class="chart-box" id="chart-citas"></div>
 </div>
 <script>
 (function() {{
@@ -305,13 +307,12 @@ def _render_daily_chart(daily: list[dict], motivos: list[dict]) -> str:
     margin: {{t:10,r:10,b:40,l:30}}, plot_bgcolor:'#1a1a1a', paper_bgcolor:'#1a1a1a',
     font: {{color:'#888',size:11}}, xaxis: {{gridcolor:'#2a2a2a'}}, yaxis: {{gridcolor:'#2a2a2a',dtick:1}}
   }}, {{displayModeBar:false,responsive:true}});
-  Plotly.newPlot('chart-motivos', [{{
-    y: {motivos_labels}, x: {motivos_vals}, type: 'bar', orientation: 'h',
-    marker: {{color: '#5fa87f'}}, text: {motivos_vals}, textposition: 'outside',
-    textfont: {{color: '#888', size: 11}}
+  Plotly.newPlot('chart-citas', [{{
+    x: {citas_dias}, y: {citas_vals}, type: 'bar',
+    marker: {{color: '#42a5f5', line: {{color: '#1e88e5', width: 1}}}}
   }}], {{
-    margin: {{t:10,r:50,b:30,l:140}}, plot_bgcolor:'#1a1a1a', paper_bgcolor:'#1a1a1a',
-    font: {{color:'#888',size:11}}, xaxis: {{gridcolor:'#2a2a2a'}}, yaxis: {{gridcolor:'#2a2a2a',automargin:true}}
+    margin: {{t:10,r:10,b:40,l:30}}, plot_bgcolor:'#1a1a1a', paper_bgcolor:'#1a1a1a',
+    font: {{color:'#888',size:11}}, xaxis: {{gridcolor:'#2a2a2a'}}, yaxis: {{gridcolor:'#2a2a2a',dtick:1}}
   }}, {{displayModeBar:false,responsive:true}});
 }})();
 </script>"""
@@ -336,7 +337,7 @@ async def citas_page(request: Request):
     <div class="item-nombre">{c['nombre']}</div>
     <div class="item-meta">📅 {fecha_str} · 🕐 {hora_str}</div>
     {f'<div class="item-msg">💊 {motivo}</div>' if motivo else ''}
-    <div class="item-meta">{c.get('telefono','')} · {c.get('email','')}</div>
+    <div class="item-meta">+{clean_tel(c.get('telefono',''))} · {c.get('email','')}</div>
   </div>
   <div class="item-actions">
     <a href="{_wa_link(c.get('telefono',''))}" target="_blank" class="btn btn-wa btn-sm">💬 WhatsApp</a>
@@ -367,6 +368,21 @@ async def citas_cancel(cita_id: int, request: Request):
     pool = await get_pool()
     ok = await cancelar_cita(pool, cita_id)
     return JSONResponse({"ok": ok})
+
+
+
+def clean_tel(tel: str) -> str:
+    """Normaliza teléfono: elimina todo lo que no sea dígito y +, mantiene solo un +57"""
+    if not tel:
+        return ""
+    digits = "".join(c for c in tel if c.isdigit())
+    if len(digits) == 10:
+        return "57" + digits
+    if len(digits) > 10 and digits.startswith("57"):
+        return digits
+    if digits.startswith("57"):
+        return digits
+    return "57" + digits[-10:] if len(digits) >= 10 else digits
 
 
 def _wa_link(tel: str) -> str:
@@ -527,7 +543,8 @@ var selSlot = null, selHora = null, selTipo = null;
 var hoy = new Date().toISOString().split('T')[0];
 var agFecha = document.getElementById('agFecha');
 agFecha.min = hoy;
-agFecha.value = hoy;
+agFecha.value = proxDiaValido(hoy);
+agFecha.addEventListener('input', manejarCambioFecha);
 
 function resetForm() {{ selSlot=null;selHora=null;document.getElementById('agForm').style.display='none';cargarSlots(); }}
 
@@ -727,24 +744,43 @@ async def recientes_page(request: Request):
         ts_str = ts.strftime("%d/%m %H:%M") if ts else ""
         msg = (c.get("ultimo_mensaje") or "")[:100]
         rows += f"""
-<tr class="item">
+<tr class="item" data-tel="{c['telefono']}">
   <div class="item-info">
-    <div class="item-nombre">{c['telefono']}</div>
-    <div class="item-meta">{ts_str} · {c['total_mensajes']} msgs</div>
-    {f'<div class="item-msg">💬 {msg}</div>' if msg else ''}
+    <div class="item-nombre" style="display:flex;align-items:center;gap:8px">+{clean_tel(c['telefono'])} <span class="badge badge-recentes" style="background:rgba(95,168,127,.12);color:#5fa87f">{c['total_mensajes']} msgs</span></div>
+    <div class="item-meta">{ts_str}</div>
+    {f'<div class="item-msg" style="background:#111;padding:8px 12px;border-radius:8px;margin-top:6px;max-width:450px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa;border-left:3px solid #5fa87f">💬 {msg}</div>' if msg else ''}
   </div>
   <div class="item-actions">
     <a href="{_wa_link(c['telefono'])}" target="_blank" class="btn btn-wa btn-sm">💬 WhatsApp</a>
+    <button class="btn btn-red btn-sm" onclick="pausarReciente('{c['telefono']}')">⏸ Pausar</button>
   </div>
 </tr>"""
     if not rows:
         rows = '<div class="empty">Sin conversaciones recientes</div>'
 
     content = f"<div class=\"card\"><div class=\"card-title\">💬 Conversaciones Recientes (48h)</div>{rows}</div>"
+    content += """
+<script>
+async function pausarReciente(tel) {
+  if(!confirm('¿Pausar el bot para '+tel+'?')) return;
+  var r = await fetch('/admin/recientes/'+encodeURIComponent(tel)+'/pausar', {method:'POST'});
+  var d = await r.json();
+  if(d.ok){toast('⏸ Bot pausado para '+tel);setTimeout(function(){location.reload()},500);}
+  else toast('Error','err');
+}
+</script>"""
     return HTMLResponse(_shell(content, request, "recientes"))
 
 
 # ── REDIRECTS ──────────────────────────────────────────────
+
+@admin_router.post("/recientes/{tel}/pausar")
+async def recientes_pausar(tel: str, request: Request):
+    _require_login(request)
+    pool = await get_pool()
+    ok = await pausar_bot(pool, tel)
+    return JSONResponse({"ok": ok})
+
 
 @admin_router.get("/", response_class=HTMLResponse)
 async def admin_root():

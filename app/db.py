@@ -71,16 +71,24 @@ async def daily_chart(pool: asyncpg.Pool, days: int = 7) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def motivos_chart(pool: asyncpg.Pool) -> list[dict]:
+async def citas_chart(pool: asyncpg.Pool, days: int = 7) -> list[dict]:
     rows = await pool.fetch("""
-        SELECT COALESCE(NULLIF(TRIM(motivo), ''), 'Sin motivo') AS motivo,
-               COUNT(*)::int AS total
-        FROM citas_control_angelical
-        WHERE estado = 'activa'
-        GROUP BY motivo
-        ORDER BY total DESC
-        LIMIT 8
-    """)
+        SELECT to_char(d.dia, 'Dy DD') AS dia,
+               COALESCE(c.total, 0)::int AS citas
+        FROM generate_series(
+            CURRENT_DATE - $1::int * INTERVAL '1 day',
+            CURRENT_DATE + INTERVAL '6 days',
+            '1 day'
+        ) AS d(dia)
+        LEFT JOIN (
+            SELECT fecha::date AS fecha, COUNT(*) AS total
+            FROM citas_control_angelical
+            WHERE estado = 'activa'
+              AND fecha::date >= CURRENT_DATE - $1::int
+            GROUP BY fecha::date
+        ) c ON d.dia = c.fecha
+        ORDER BY d.dia
+    """, days)
     return [dict(r) for r in rows]
 
 
@@ -149,6 +157,15 @@ async def reanudar_bot(pool: asyncpg.Pool, telefono: str) -> bool:
     return "UPDATE 1" in result
 
 
+async def pausar_bot(pool: asyncpg.Pool, telefono: str) -> bool:
+    result = await pool.execute(
+        "INSERT INTO bot_pausado_angelical (telefono, pausado) VALUES ($1, TRUE) "
+        "ON CONFLICT (telefono) DO UPDATE SET pausado = TRUE",
+        telefono,
+    )
+    return "INSERT" in result or "UPDATE" in result
+
+
 # ── Recientes ──────────────────────────────────────────────
 
 async def get_recientes(pool: asyncpg.Pool) -> list[dict]:
@@ -160,6 +177,14 @@ async def get_recientes(pool: asyncpg.Pool) -> list[dict]:
         LIMIT 30
     """)
     return [dict(r) for r in rows]
+
+
+async def is_pausado(pool: asyncpg.Pool, telefono: str) -> bool:
+    row = await pool.fetchrow(
+        "SELECT 1 FROM bot_pausado_angelical WHERE telefono=$1 AND pausado=TRUE",
+        telefono,
+    )
+    return row is not None
 
 
 # ── Agendar Control ──────────────────────────────────────
@@ -176,7 +201,7 @@ async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
         ),
         ocupados AS (
             SELECT hora FROM citas_control_angelical
-            WHERE fecha = $1::date AND estado = 'activa'
+            WHERE fecha::date = $1::date AND estado = 'activa'
         )
         SELECT s.hora::text AS hora
         FROM slots s
