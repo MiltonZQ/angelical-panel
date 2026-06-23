@@ -644,9 +644,11 @@ async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
 
     # tipo == primera → Cal.com API
     try:
+        import logging
+        logger = logging.getLogger("uvicorn.error")
         params = {
             "start": fecha,
-            "end": fecha,  # same day
+            "end": _next_day(fecha),
             "username": config.CAL_USERNAME,
             "eventTypeSlug": config.CAL_EVENT_SLUG,
         }
@@ -654,9 +656,10 @@ async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 "https://api.cal.com/v2/slots",
-                params={**params, "end": _next_day(fecha)},
+                params=params,
                 headers=headers,
             )
+            logger.info(f"Cal.com response status: {resp.status_code}")
             data = resp.json()
             slots = []
             if isinstance(data, dict):
@@ -665,14 +668,11 @@ async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
                     for day, times in slots_data.items():
                         if day.startswith("20"):
                             slots.extend(t.get("start", t.get("time", t)) for t in (times or []))
-            elif isinstance(data, list):
-                for item in data:
-                    for day, times in (item.get("data", {}) or {}).items():
-                        if day.startswith("20"):
-                            slots.extend(t.get("start", t.get("time", t)) for t in (times or []))
+            logger.info(f"Slots found: {len(slots)}")
             return JSONResponse({"slots": slots})
-    except Exception:
-        return JSONResponse({"slots": [], "error": "Error consultando disponibilidad"})
+    except Exception as e:
+        logger.error(f"Slots error: {e}")
+        return JSONResponse({"slots": [], "error": str(e)})
 
 
 def _next_day(date_str: str) -> str:
