@@ -540,15 +540,29 @@ async def agendar_page(request: Request):
 </div>
 <script>
 var selSlot = null, selHora = null, selTipo = null;
+var VALIDOS = [2,3,5,6];
+var FESTIVOS = ['2026-01-01','2026-01-12','2026-03-23','2026-04-02','2026-04-03','2026-05-01','2026-05-18','2026-06-08','2026-06-15','2026-06-29','2026-07-20','2026-08-07','2026-08-17','2026-10-12','2026-11-02','2026-11-16','2026-12-08','2026-12-25'];
+
+function fechaValida(f) { var d = new Date(f+'T12:00:00'); return VALIDOS.includes(d.getDay()) && !FESTIVOS.includes(f); }
+
+function proxValido(desde) {
+  var d = new Date(desde+'T12:00:00');
+  for(var i=0;i<30;i++) { var t = new Date(d.getTime()+i*86400000); var s = t.toISOString().split('T')[0]; if(VALIDOS.includes(t.getDay())&&!FESTIVOS.includes(s)) return s; }
+  return desde;
+}
+
 var hoy = new Date().toISOString().split('T')[0];
 var agFecha = document.getElementById('agFecha');
 agFecha.min = hoy;
-agFecha.value = proxDiaValido(hoy);
-agFecha.addEventListener('input', manejarCambioFecha);
+agFecha.value = proxValido(hoy);
+agFecha.addEventListener('input', function() {
+  if(!fechaValida(this.value)) { this.value = proxValido(this.value); toast('Solo atendemos martes, miércoles, viernes y sábado','err'); }
+  cargarSlots();
+});
 
-function resetForm() {{ selSlot=null;selHora=null;document.getElementById('agForm').style.display='none';cargarSlots(); }}
+function resetForm() { selSlot=null;selHora=null;document.getElementById('agForm').style.display='none';cargarSlots(); }
 
-async function cargarSlots() {{
+async function cargarSlots() {
   var tipo = document.getElementById('agTipo').value;
   selTipo = tipo;
   var fecha = document.getElementById('agFecha').value;
@@ -557,79 +571,68 @@ async function cargarSlots() {{
   var grid = document.getElementById('slotsGrid');
   var label = document.getElementById('slotsLabel');
   cont.style.display = 'block';
-  grid.innerHTML = '<div style="color:#888;padding:8px">Cargando...</div>';
+  grid.innerHTML = '<div style="color:#888;padding:8px">Cargando horarios...</div>';
   selSlot=null;selHora=null;document.getElementById('agForm').style.display='none';
-  try {{
-    if(tipo === 'primera') {{
-      label.textContent = 'Horarios disponibles (Cal.com · Cada 30 min)';
+  try {
+    if(tipo === 'primera') {
+      label.textContent = 'Horarios disponibles (Cal.com · 30 min)';
       var r = await fetch('/admin/slots?fecha='+fecha+'&tipo=primera');
       var d = await r.json();
       var slots = d.slots || [];
-      if(!slots.length){{grid.innerHTML='<div style="color:#666;padding:8px">Sin disponibilidad</div>';return;}}
-      grid.innerHTML = slots.map(function(s){{
-        var h = new Date(s).toLocaleTimeString('es-CO',{{hour:'2-digit',minute:'2-digit',hour12:true,timeZone:'America/Bogota'}});
-        return '<button class="slot-btn" data-start="'+s+'" onclick="selPrimera(this,\\''+h+'\\')">'+h+'</button>';
-      }}).join('');
-    }} else {{
-      label.textContent = 'Horarios disponibles (Control · Cada 15 min)';
+      if(!slots.length){grid.innerHTML='<div style="color:#666;padding:8px">Sin disponibilidad para esta fecha</div>';return;}
+      grid.innerHTML = slots.map(function(s){
+        var h = new Date(s).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit',hour12:true,timeZone:'America/Bogota'});
+        return '<button class="slot-btn" data-start="'+s+'" onclick="selPrimera(this)">'+h+'</button>';
+      }).join('');
+    } else {
+      label.textContent = 'Horarios disponibles (Control · 15 min)';
       var r = await fetch('/admin/slots?fecha='+fecha+'&tipo=control');
       var d = await r.json();
       var slots = d.slots || [];
-      if(!slots.length){{grid.innerHTML='<div style="color:#666;padding:8px">Sin disponibilidad</div>';return;}}
-      grid.innerHTML = slots.map(function(h){{
-        return '<button class="slot-btn" onclick="selControl(this,\\''+h+'\\')">'+h.substring(0,5)+'</button>';
-      }}).join('');
-    }}
-  }} catch(e) {{ grid.innerHTML='<div style="color:#f44336;padding:8px">Error cargando</div>'; }}
-}}
+      if(!slots.length){grid.innerHTML='<div style="color:#666;padding:8px">Sin disponibilidad</div>';return;}
+      grid.innerHTML = slots.map(function(h){
+        return '<button class="slot-btn" onclick="selControl(this)">'+h.substring(0,5)+'</button>';
+      }).join('');
+    }
+  } catch(e) { grid.innerHTML='<div style="color:#f44336;padding:8px">Error cargando horarios</div>'; }
+}
 
-function selPrimera(btn, hora) {{
-  selSlot = btn.dataset.start;
-  selHora = null;
-  document.querySelectorAll('.slot-btn').forEach(function(b){{b.classList.remove('sel')}});
+function selPrimera(btn) {
+  selSlot = btn.dataset.start; selHora = null;
+  document.querySelectorAll('.slot-btn').forEach(function(b){b.classList.remove('sel')});
   btn.classList.add('sel');
   document.getElementById('agForm').style.display = 'block';
   document.getElementById('agMsg').style.display = 'none';
-}}
-function selControl(btn, hora) {{
-  selHora = hora;
-  selSlot = null;
-  document.querySelectorAll('.slot-btn').forEach(function(b){{b.classList.remove('sel')}});
+}
+function selControl(btn) {
+  selHora = btn.textContent.trim(); selSlot = null;
+  document.querySelectorAll('.slot-btn').forEach(function(b){b.classList.remove('sel')});
   btn.classList.add('sel');
   document.getElementById('agForm').style.display = 'block';
   document.getElementById('agMsg').style.display = 'none';
-}}
+}
 
-async function confirmar() {{
+async function confirmar() {
   var nombre = document.getElementById('agNombre').value.trim();
   var telefono = document.getElementById('agTelefono').value.trim();
   var email = document.getElementById('agEmail').value.trim();
   var motivo = document.getElementById('agMotivo').value.trim();
   var fecha = document.getElementById('agFecha').value;
   var msg = document.getElementById('agMsg');
-  if(!nombre||!telefono||!fecha){{ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Complete nombre, teléfono y fecha';return; }}
-  if(selTipo==='primera' && !selSlot){{ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Seleccione un horario';return; }}
-  if(selTipo==='control' && !selHora){{ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Seleccione un horario';return; }}
+  if(!nombre||!telefono||!fecha){ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Complete nombre, teléfono y fecha';return; }
+  if(selTipo==='primera' && !selSlot){ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Seleccione un horario';return; }
+  if(selTipo==='control' && !selHora){ msg.className='msg-inline msg-err';msg.style.display='block';msg.textContent='Seleccione un horario';return; }
   msg.style.display='block';msg.style.background='#1a1a2a';msg.style.color='#aaa';msg.style.border='1px solid #444';msg.textContent='Agendando...';
-  try {{
-    var r = await fetch('/admin/agendar', {{
-      method:'POST',headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{tipo:selTipo,nombre,telefono,email,fecha,motivo,start:selSlot,hora:selHora}})
-    }});
+  try {
+    var r = await fetch('/admin/agendar', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tipo:selTipo,nombre,telefono,email,fecha,motivo,start:selSlot,hora:selHora})});
     var d = await r.json();
-    if(d.id||d.uid||d.ok){{
-      msg.className='msg-inline msg-ok';msg.textContent='✅ Cita confirmada para '+nombre;
-      setTimeout(function(){{location.reload()}},1500);
-    }} else {{
-      msg.className='msg-inline msg-err';msg.textContent=(d.error&&d.error.message)||d.error||'Error al agendar';
-    }}
-  }} catch(e) {{ msg.className='msg-inline msg-err';msg.textContent='Error de conexión'; }}
-}}
+    if(d.id||d.uid||d.ok){msg.className='msg-inline msg-ok';msg.textContent='✅ Cita confirmada para '+nombre;setTimeout(function(){location.reload()},1500);}
+    else{msg.className='msg-inline msg-err';msg.textContent=(d.error&&d.error.message)||d.error||'Error al agendar';}
+  } catch(e) { msg.className='msg-inline msg-err';msg.textContent='Error de conexión'; }
+}
 cargarSlots();
 </script>"""
     return HTMLResponse(_shell(content, request, "agendar"))
-
-
 @admin_router.get("/slots")
 async def slots(request: Request, fecha: str = "", tipo: str = "primera"):
     _require_login(request)
