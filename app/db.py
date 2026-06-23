@@ -205,7 +205,7 @@ async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
         )
         SELECT s.hora::text AS hora_full, SUBSTRING(s.hora::text, 1, 5) AS hora
         FROM slots s
-        LEFT JOIN ocupados o ON SUBSTRING(s.hora::text, 1, 5) = o.hora
+        LEFT JOIN ocupados o ON SUBSTRING(s.hora::text, 1, 5) = o.hora::text
         WHERE o.hora IS NULL
         ORDER BY s.hora
         """,
