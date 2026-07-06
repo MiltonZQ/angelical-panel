@@ -789,7 +789,7 @@ async function togglePausaReciente(tel, pausar) {
   var endpoint = pausar ? '/admin/recientes/'+encodeURIComponent(tel)+'/pausar' : '/admin/pausados/'+encodeURIComponent(tel)+'/reanudar';
   var r = await fetch(endpoint, {method:'POST'});
   var d = await r.json();
-  if(d.ok){toast(accion+'ado: '+tel);setTimeout(function(){location.reload()},500);}
+  if(d.ok){toast((pausar?'⏸ Pausado: ':'▶ Reanudado: ')+tel);setTimeout(function(){location.reload()},500);}
   else toast('Error','err');
 }
 </script>"""
