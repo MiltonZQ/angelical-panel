@@ -453,7 +453,7 @@ async def pausados_page(request: Request):
     rows = ""
     for p in pausados:
         rows += f"""
-<tr class="item" data-tel="{p['telefono']}">
+<div class="item" data-tel="{p['telefono']}">
   <div class="item-info">
     <div class="item-nombre">{p['telefono']} <span class="badge badge-red">Pausado</span></div>
   </div>
@@ -461,7 +461,7 @@ async def pausados_page(request: Request):
     <a href="{_wa_link(p['telefono'])}" target="_blank" class="btn btn-wa btn-sm">💬 WhatsApp</a>
     <button class="btn btn-green btn-sm" onclick="reanudar('{p['telefono']}')">▶ Reanudar</button>
   </div>
-</tr>"""
+</div>"""
     if not rows:
         rows = '<div class="empty">No hay bots pausados 🎉</div>'
 
