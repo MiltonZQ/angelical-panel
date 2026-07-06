@@ -199,7 +199,7 @@ _HOLIDAYS_2026 = {
 _VALID_WEEKDAYS = {2, 3, 5, 6}  # Tue, Wed, Fri, Sat
 
 _VACACIONES_INICIO = '2026-07-23'
-_VACACIONES_FIN = '2026-07-31'
+_VACACIONES_FIN = '2026-07-29'
 
 
 def is_valid_appointment_date(fecha: str) -> bool:
