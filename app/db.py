@@ -189,8 +189,52 @@ async def is_pausado(pool: asyncpg.Pool, telefono: str) -> bool:
 
 # ── Agendar Control ──────────────────────────────────────
 
+_HOLIDAYS_2026 = {
+    '2026-01-01', '2026-01-12', '2026-03-23', '2026-04-02', '2026-04-03',
+    '2026-05-01', '2026-05-18', '2026-06-08', '2026-06-15', '2026-06-29',
+    '2026-07-20', '2026-08-07', '2026-08-17', '2026-10-12', '2026-11-02',
+    '2026-11-16', '2026-12-08', '2026-12-25',
+}
+
+_VALID_WEEKDAYS = {2, 3, 5, 6}  # Tue, Wed, Fri, Sat
+
+_VACACIONES_INICIO = '2026-07-23'
+_VACACIONES_FIN = '2026-07-31'
+
+
+def is_valid_appointment_date(fecha: str) -> bool:
+    from datetime import date as dt_date
+    try:
+        d = dt_date.fromisoformat(fecha)
+    except (ValueError, TypeError):
+        return False
+    if _VACACIONES_INICIO <= fecha <= _VACACIONES_FIN:
+        return False
+    if fecha in _HOLIDAYS_2026:
+        return False
+    if d.isoweekday() not in _VALID_WEEKDAYS:
+        return False
+    return True
+
+
+def invalid_date_error(fecha: str) -> str:
+    from datetime import date as dt_date
+    try:
+        d = dt_date.fromisoformat(fecha)
+    except (ValueError, TypeError):
+        return "Fecha inválida"
+    if _VACACIONES_INICIO <= fecha <= _VACACIONES_FIN:
+        return f"Vacaciones del 23 al 31 de julio. No se agendan citas."
+    if fecha in _HOLIDAYS_2026:
+        return f"{fecha} es festivo. No se agendan citas."
+    dias = {1: 'lunes', 2: 'martes', 3: 'miércoles', 4: 'jueves', 5: 'viernes', 6: 'sábado', 7: 'domingo'}
+    return f"Solo atendemos martes, miércoles, viernes y sábado (seleccionó {dias[d.isoweekday()]})"
+
+
 async def get_control_slots(pool: asyncpg.Pool, fecha: str) -> list[str]:
     from datetime import date as dt_date
+    if not is_valid_appointment_date(fecha):
+        return []
     fecha_date = dt_date.fromisoformat(fecha)
     rows = await pool.fetch(
         """

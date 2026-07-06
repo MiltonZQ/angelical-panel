@@ -21,6 +21,8 @@ from app.db import (
     get_recientes,
     get_control_slots,
     insert_control,
+    is_valid_appointment_date,
+    invalid_date_error,
 )
 
 admin_router = APIRouter(prefix="/admin")
@@ -695,6 +697,9 @@ async def agendar_post(request: Request):
     tipo = data.get("tipo", "primera")
 
     if tipo == "control":
+        fecha = data.get("fecha", "")
+        if not is_valid_appointment_date(fecha):
+            return JSONResponse({"ok": False, "error": invalid_date_error(fecha)})
         row = await insert_control(
             pool,
             nombre=data.get("nombre", ""),

@@ -1,13 +1,13 @@
 import contextlib
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_SECRET
-from app.db import close_pool, get_pool
+from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error
 from app.admin import admin_router
 
 logger = logging.getLogger("uvicorn.error")
@@ -58,3 +58,49 @@ async def health():
 @app.get("/favicon.ico")
 async def favicon():
     return ""
+
+
+@app.get("/api/control-slots")
+async def api_control_slots(fecha: str = ""):
+    try:
+        pool = await get_pool()
+        if not fecha:
+            return JSONResponse({"slots": [], "error": "Falta parámetro fecha (YYYY-MM-DD)"})
+        if not is_valid_appointment_date(fecha):
+            return JSONResponse({"slots": [], "error": invalid_date_error(fecha)})
+        horas = await get_control_slots(pool, fecha)
+        return JSONResponse({"slots": horas})
+    except Exception as e:
+        logger.error(f"control-slots error: {e}")
+        return JSONResponse({"slots": [], "error": str(e)})
+
+
+@app.post("/api/control-agendar")
+async def api_control_agendar(request: Request):
+    try:
+        data = await request.json()
+        fecha = data.get("fecha", "")
+        if not fecha:
+            return JSONResponse({"ok": False, "error": "Falta fecha (YYYY-MM-DD)"})
+        if not is_valid_appointment_date(fecha):
+            return JSONResponse({"ok": False, "error": invalid_date_error(fecha)})
+        hora = data.get("hora", "")
+        if not hora:
+            return JSONResponse({"ok": False, "error": "Falta hora (HH:MM)"})
+        nombre = data.get("nombre", "")
+        if not nombre:
+            return JSONResponse({"ok": False, "error": "Falta nombre del paciente"})
+        pool = await get_pool()
+        row = await insert_control(
+            pool,
+            nombre=nombre,
+            telefono=data.get("telefono", ""),
+            email=data.get("email", ""),
+            fecha=fecha,
+            hora=hora,
+            motivo=data.get("motivo", ""),
+        )
+        return JSONResponse({"ok": True, "id": row["id"]})
+    except Exception as e:
+        logger.error(f"control-agendar error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
