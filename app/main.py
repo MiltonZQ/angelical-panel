@@ -60,6 +60,15 @@ async def favicon():
     return ""
 
 
+@app.get("/api/validar-fecha")
+async def api_validar_fecha(fecha: str = ""):
+    if not fecha:
+        return JSONResponse({"valida": False, "motivo": "Falta parámetro fecha (YYYY-MM-DD)"})
+    if is_valid_appointment_date(fecha):
+        return JSONResponse({"fecha": fecha, "valida": True, "motivo": "Día hábil de atención"})
+    return JSONResponse({"fecha": fecha, "valida": False, "motivo": invalid_date_error(fecha)})
+
+
 @app.get("/api/control-slots")
 async def api_control_slots(fecha: str = ""):
     try:

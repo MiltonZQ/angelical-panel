@@ -224,7 +224,7 @@ def invalid_date_error(fecha: str) -> str:
     except (ValueError, TypeError):
         return "Fecha inválida"
     if _VACACIONES_INICIO <= fecha <= _VACACIONES_FIN:
-        return f"Vacaciones del 23 al 31 de julio. No se agendan citas."
+        return "Vacaciones del 23 al 30 de julio. No se agendan citas. Se retoma el 31 de julio."
     if fecha in _HOLIDAYS_2026:
         return f"{fecha} es festivo. No se agendan citas."
     dias = {1: 'lunes', 2: 'martes', 3: 'miércoles', 4: 'jueves', 5: 'viernes', 6: 'sábado', 7: 'domingo'}
