@@ -8,6 +8,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_SECRET
 from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error
+from app.cal import disponibilidad_para_bot, validar_y_agendar
 from app.admin import admin_router
 
 logger = logging.getLogger("uvicorn.error")
@@ -67,6 +68,48 @@ async def api_validar_fecha(fecha: str = ""):
     if is_valid_appointment_date(fecha):
         return JSONResponse({"fecha": fecha, "valida": True, "motivo": "Día hábil de atención"})
     return JSONResponse({"fecha": fecha, "valida": False, "motivo": invalid_date_error(fecha)})
+
+
+@app.get("/api/slots-primera")
+async def api_slots_primera(desde: str = "", hasta: str = ""):
+    """Única fuente de verdad de disponibilidad de PRIMERA CONSULTA para el bot.
+
+    Devuelve fechas y horas ya en hora de Colombia, ya filtradas por días de atención,
+    festivos, horario 09:00–11:00 y tope de 4 cupos por día.
+    """
+    try:
+        return JSONResponse(await disponibilidad_para_bot(desde, hasta))
+    except Exception as e:
+        logger.error(f"slots-primera error: {e}")
+        return JSONResponse({
+            "hay_disponibilidad": False,
+            "dias": [],
+            "proxima_fecha": None,
+            "error": str(e),
+            "mensaje": (
+                "ERROR consultando disponibilidad. NO ofrezcas ninguna fecha. "
+                "Dile al paciente que en un momento le confirmas y responde [ESCALAR_HUMANO]."
+            ),
+        })
+
+
+@app.post("/api/agendar-primera")
+async def api_agendar_primera(request: Request):
+    """Puerta única para agendar primera consulta. Valida antes de tocar Cal.com."""
+    try:
+        data = await request.json()
+        resultado = await validar_y_agendar(
+            nombre=data.get("nombre", "").strip(),
+            email=data.get("email", "").strip(),
+            telefono=data.get("telefono", "").strip(),
+            fecha=data.get("fecha", "").strip(),
+            hora=data.get("hora", "").strip(),
+            motivo=data.get("motivo", ""),
+        )
+        return JSONResponse(resultado)
+    except Exception as e:
+        logger.error(f"agendar-primera error: {e}")
+        return JSONResponse({"ok": False, "error": f"NO SE AGENDÓ: error interno ({e})"})
 
 
 @app.get("/api/control-slots")
