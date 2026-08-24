@@ -354,3 +354,52 @@ async def buscar_activa(pool: asyncpg.Pool, telefono_norm: str, paciente_norm: s
         telefono_norm, paciente_norm,
     )
     return dict(row) if row else None
+
+
+# Above the httpx timeout (25s) + slots/citas lookups with margin, so a row
+# only reaches TTL when the request that created it has genuinely died --
+# never mid-flight. See design decision "pending rows expire by
+# adoption-check, never blindly".
+RESERVA_PENDIENTE_TTL = 120
+
+
+async def expirar_pendientes(
+    pool: asyncpg.Pool,
+    telefono_norm: str,
+    paciente_norm: str,
+    buscar_cal_uid,
+) -> str | None:
+    """Sweeps ONE stale pending row (estado='activa', confirmed_at IS NULL,
+    older than RESERVA_PENDIENTE_TTL) for this exact normalized pair, before
+    a new insert_reserva() attempt for the same pair.
+
+    Never expires blindly: the process that created the pending row may have
+    died AFTER Cal.com already confirmed the booking, in which case expiring
+    it here would let a second insert through and produce a genuine double
+    booking. `buscar_cal_uid` is an async callable that takes the stale row
+    (dict) and returns a Cal.com booking uid (str) if one actually exists
+    for it, or None. Found -> adopt (stamp cal_uid/confirmed_at, row stays
+    active). Not found -> expire (`estado='expirada'`).
+
+    Returns the adopted cal_uid, or None when nothing was stale or the stale
+    row was expired instead of adopted.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id, telefono, paciente, fecha::date AS fecha, hora::time AS hora
+        FROM reservas_primera_angelical
+        WHERE telefono_norm = $1 AND paciente_norm = $2
+          AND estado = 'activa' AND confirmed_at IS NULL
+          AND created_at < now() - ($3 || ' seconds')::interval
+        """,
+        telefono_norm, paciente_norm, str(RESERVA_PENDIENTE_TTL),
+    )
+    if row is None:
+        return None
+    stale = dict(row)
+    cal_uid = await buscar_cal_uid(stale)
+    if cal_uid:
+        await confirmar_reserva(pool, stale["id"], cal_uid)
+        return cal_uid
+    await cerrar_reserva(pool, stale["id"], "expirada", "pending_ttl_sin_reserva_en_cal")
+    return None

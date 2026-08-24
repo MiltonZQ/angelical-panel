@@ -14,10 +14,21 @@ import logging
 from datetime import date as dt_date, datetime, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
+import asyncpg
 import httpx
 
 from app import config
-from app.db import is_valid_appointment_date, invalid_date_error
+from app.db import (
+    buscar_activa,
+    cerrar_reserva,
+    confirmar_reserva,
+    expirar_pendientes,
+    get_pool,
+    insert_reserva,
+    invalid_date_error,
+    is_valid_appointment_date,
+)
+from app.normalize import normalizar_identidad, normalizar_telefono
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -182,6 +193,92 @@ async def crear_reserva(
     return {"ok": False, "error": f"NO SE AGENDÓ: Cal.com rechazó la reserva ({detalle})"}
 
 
+async def buscar_reserva_cal(uid: str) -> dict | None:
+    """GET a single Cal.com booking by uid. Returns None when it is absent,
+    cancelled, or rejected -- the "still really booked?" check used by the
+    on-read reconcile path when the ledger rejects an insert."""
+    headers = {
+        "cal-api-version": config.CAL_API_VERSION_BOOKINGS,
+        "Authorization": f"Bearer {config.CAL_API_KEY}",
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"https://api.cal.com/v2/bookings/{uid}", headers=headers
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        result = resp.json()
+    datos = result.get("data") if isinstance(result.get("data"), dict) else result
+    if not isinstance(datos, dict):
+        return None
+    if datos.get("status") in ("cancelled", "rejected"):
+        return None
+    return datos
+
+
+async def _buscar_uid_pendiente(pendiente: dict) -> str | None:
+    """Targeted Cal.com lookup used only by expirar_pendientes(): did a
+    booking for this exact stale pending row actually get created, even
+    though our process died before confirmar_reserva() could stamp it?
+    Matches on attendee phone AND exact start time -- the (fecha, hora) the
+    pending row was inserted with."""
+    fecha = pendiente["fecha"].isoformat()
+    hora = pendiente["hora"].strftime("%H:%M")
+    objetivo = _a_iso_utc(fecha, hora)
+    params = {
+        "eventTypeId": config.CAL_EVENT_TYPE_ID,
+        "afterStart": f"{fecha}T00:00:00Z",
+        "beforeEnd": f"{(dt_date.fromisoformat(fecha) + timedelta(days=1)).isoformat()}T00:00:00Z",
+        "take": 250,
+    }
+    headers = {
+        "cal-api-version": config.CAL_API_VERSION_BOOKINGS,
+        "Authorization": f"Bearer {config.CAL_API_KEY}",
+    }
+    telefono_objetivo = normalizar_telefono(pendiente["telefono"])
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://api.cal.com/v2/bookings", params=params, headers=headers
+        )
+        resp.raise_for_status()
+        for b in resp.json().get("data", []) or []:
+            if b.get("status") in ("cancelled", "rejected"):
+                continue
+            if b.get("start") != objetivo:
+                continue
+            attendees = b.get("attendees") or [{}]
+            telefono_attendee = (attendees[0] or {}).get("phoneNumber", "")
+            if normalizar_telefono(telefono_attendee) == telefono_objetivo:
+                return b.get("uid")
+    return None
+
+
+def _rechazo_duplicado(bloqueante: dict | None, paciente: str) -> dict:
+    """Builds the existing `{"ok": False, "error": "NO SE AGENDÓ: ..."}` shape
+    for a ledger-rejected duplicate. Names a runnable continuation, per
+    design: cancel the current booking first, then book again."""
+    if bloqueante is None:
+        return {
+            "ok": False,
+            "error": (
+                f"NO SE AGENDÓ: {paciente} ya tiene una primera consulta activa. "
+                "Para cambiarla, cancela la actual primero y vuelve a agendar."
+            ),
+        }
+    f = bloqueante["fecha"]
+    f = f.isoformat() if hasattr(f, "isoformat") else f
+    h = bloqueante["hora"]
+    h = h.strftime("%H:%M") if hasattr(h, "strftime") else h
+    return {
+        "ok": False,
+        "error": (
+            f"NO SE AGENDÓ: {paciente} ya tiene una primera consulta activa el {f} "
+            f"a las {h}. Para cambiarla, cancela la actual primero y vuelve a agendar."
+        ),
+    }
+
+
 async def validar_y_agendar(
     nombre: str, email: str, telefono: str, fecha: str, hora: str, motivo: str = ""
 ) -> dict:
@@ -245,7 +342,57 @@ async def validar_y_agendar(
             ),
         }
 
-    return await crear_reserva(nombre, email, telefono, fecha, hora, motivo)
+    # ── Ledger-first ordering (T1) ──────────────────────────────────────
+    # From here on Postgres is the dedup authority, not another read-then-
+    # write check. insert_reserva() (T1) commits immediately -- it is NOT
+    # held open across the Cal.com HTTP call below (T1/T2 stay two separate
+    # commits), otherwise the unique constraint would block the loser for
+    # up to ~25s instead of rejecting it instantly, stalling the max_size=5
+    # pool. See design decision "two transactions, not one open across the
+    # Cal.com call".
+    pool = await get_pool()
+    telefono_norm = normalizar_telefono(telefono)
+    paciente_norm = normalizar_identidad(nombre)
+
+    await expirar_pendientes(pool, telefono_norm, paciente_norm, _buscar_uid_pendiente)
+
+    try:
+        reserva = await insert_reserva(pool, telefono, nombre, fecha, hora)
+    except asyncpg.exceptions.UniqueViolationError as e:
+        # Catch ONLY this specific constraint violation -- never a bare
+        # `except Exception`, which would swallow real faults.
+        if e.constraint_name != "ux_reserva_activa_paciente":
+            raise
+        bloqueante = await buscar_activa(pool, telefono_norm, paciente_norm)
+        # On-read reconcile: before returning the rejection, verify the
+        # blocking row's cal_uid is still live in Cal.com. Cancelled/absent
+        # -> self-heal (mark cancelada_externa) and retry the insert once.
+        if bloqueante and bloqueante.get("cal_uid"):
+            vigente = await buscar_reserva_cal(bloqueante["cal_uid"])
+            if vigente is None:
+                await cerrar_reserva(
+                    pool, bloqueante["id"], "cancelada_externa", "cal_uid_cancelado_reconcile"
+                )
+                try:
+                    reserva = await insert_reserva(pool, telefono, nombre, fecha, hora)
+                except asyncpg.exceptions.UniqueViolationError:
+                    return _rechazo_duplicado(bloqueante, nombre)
+            else:
+                return _rechazo_duplicado(bloqueante, nombre)
+        else:
+            return _rechazo_duplicado(bloqueante, nombre)
+
+    # T1 committed. crear_reserva() runs outside any transaction.
+    resultado = await crear_reserva(nombre, email, telefono, fecha, hora, motivo)
+    if resultado.get("ok"):
+        # T2 success: stamp the Cal.com uid.
+        await confirmar_reserva(pool, reserva["id"], resultado["uid"])
+        return resultado
+
+    # T2 failure: compensation, not rollback -- the ledger row stays for
+    # audit, closed as 'fallida'.
+    await cerrar_reserva(pool, reserva["id"], "fallida", "cal_error")
+    return resultado
 
 
 async def disponibilidad_para_bot(desde: str, hasta: str) -> dict:

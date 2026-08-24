@@ -69,7 +69,10 @@ def database_url():
 
 @pytest_asyncio.fixture
 async def pg_pool(database_url):
-    """Fresh ledger schema per test: applies migration 001, tears down after.
+    """Fresh ledger schema per test: applies migration 001 ONLY, tears down
+    after. This matches production through slice S2 -- migration 002 (the
+    `ux_reserva_activa_paciente` unique index) is NOT applied here, exactly
+    like it is not applied in production until slice S3's backfill gate.
 
     Scoped per-test (not per-session) so tests never leak rows into each
     other -- required for the concurrency/race assertions added in later
@@ -80,6 +83,31 @@ async def pg_pool(database_url):
     )
     async with pool.acquire() as conn:
         await conn.execute(_read_migration("001_reservas_ledger.sql"))
+    try:
+        yield pool
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DROP TABLE IF EXISTS sesiones_bot_angelical")
+            await conn.execute("DROP TABLE IF EXISTS reservas_primera_angelical")
+        await pool.close()
+
+
+@pytest_asyncio.fixture
+async def pg_pool_enforced(database_url):
+    """Ledger schema with 001 + 002 applied -- the ONLY place migration 002
+    is ever executed in this slice. Test-only: it exists so
+    `tests/test_concurrency.py` and `tests/test_cal_ordering.py` can exercise
+    the real `ux_reserva_activa_paciente` constraint that
+    `validar_y_agendar()`'s `UniqueViolationError` handling depends on, even
+    though production does not have that index until slice S3. This fixture
+    must NEVER be pointed at a production or staging database.
+    """
+    pool = await asyncpg.create_pool(
+        database_url, min_size=2, max_size=5, statement_cache_size=0
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(_read_migration("001_reservas_ledger.sql"))
+        await conn.execute(_read_migration("002_unique_activa.sql"))
     try:
         yield pool
     finally:
