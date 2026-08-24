@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_SECRET
-from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error, reconciliar_reservas
+from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error, reconciliar_reservas, lock_sesion, unlock_sesion, SESION_LOCK_TTL
 from app.cal import buscar_uid_pendiente, buscar_reserva_cal, disponibilidad_para_bot, validar_y_agendar
 from app.admin import admin_router
 
@@ -169,4 +169,41 @@ async def api_reconciliar(_request: Request):
         return JSONResponse({"ok": True, **resultado})
     except Exception as e:
         logger.error(f"reconciliar error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/sesion/lock")
+async def api_sesion_lock(request: Request):
+    """Per-phone execution lock for the n8n workflow (`Lock Sesión` node).
+    TTL 180s. An empty/missing body on the caller side counts as acquired
+    -- see the `¿Lock Adquirido?` node's fail-open wiring."""
+    try:
+        data = await request.json()
+        telefono = data.get("telefono", "").strip()
+        ejecucion = data.get("ejecucion", "").strip()
+        if not telefono or not ejecucion:
+            return JSONResponse({"ok": False, "error": "Faltan telefono o ejecucion"})
+        pool = await get_pool()
+        adquirido = await lock_sesion(pool, telefono, ejecucion)
+        return JSONResponse({"ok": True, "adquirido": adquirido, "expira_en": SESION_LOCK_TTL})
+    except Exception as e:
+        logger.error(f"sesion/lock error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/sesion/unlock")
+async def api_sesion_unlock(request: Request):
+    """Releases the lock held by this exact execution id (`Liberar Lock`
+    node). ejecucion-matched: never releases another run's lock."""
+    try:
+        data = await request.json()
+        telefono = data.get("telefono", "").strip()
+        ejecucion = data.get("ejecucion", "").strip()
+        if not telefono or not ejecucion:
+            return JSONResponse({"ok": False, "error": "Faltan telefono o ejecucion"})
+        pool = await get_pool()
+        await unlock_sesion(pool, telefono, ejecucion)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        logger.error(f"sesion/unlock error: {e}")
         return JSONResponse({"ok": False, "error": str(e)})

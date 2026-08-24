@@ -522,3 +522,45 @@ async def reconciliar_reservas(pool: asyncpg.Pool, buscar_reserva_cal, buscar_ca
         "adoptadas": adoptadas,
         "expiradas": expiradas,
     }
+
+
+# ── Session lock (S4) ────────────────────────────────────────────────────
+#
+# One n8n agent execution per phone at a time. Chosen over the Redis
+# `n8n-nodes-base.redis` node: it exposes only set/get/delete/incr/keys/
+# info/push/pop/publish -- no `NX` flag -- so an INCR+EXPIRE emulation could
+# strand a key permanently if the execution dies between the two commands.
+# Acquisition here is ONE atomic statement: the TTL check and the write are
+# the same `INSERT ... ON CONFLICT DO UPDATE ... WHERE` round trip, so there
+# is no separate acquire/expire window to race.
+SESION_LOCK_TTL = 180
+
+
+async def lock_sesion(pool: asyncpg.Pool, telefono: str, ejecucion: str) -> bool:
+    """Tries to acquire the per-phone lock for this execution id. Returns
+    True when acquired (either the row was free, or held by an expired
+    lock), False when another still-live execution holds it."""
+    row = await pool.fetchrow(
+        """
+        INSERT INTO sesiones_bot_angelical (telefono, ejecucion, expira_at)
+        VALUES ($1, $2, now() + ($3 || ' seconds')::interval)
+        ON CONFLICT (telefono) DO UPDATE
+           SET ejecucion = EXCLUDED.ejecucion, expira_at = EXCLUDED.expira_at
+           WHERE sesiones_bot_angelical.expira_at < now()
+        RETURNING ejecucion = $2 AS adquirido
+        """,
+        telefono, ejecucion, str(SESION_LOCK_TTL),
+    )
+    return bool(row and row["adquirido"])
+
+
+async def unlock_sesion(pool: asyncpg.Pool, telefono: str, ejecucion: str) -> bool:
+    """Releases the lock only when `ejecucion` still matches the current
+    holder -- one run can never release another run's lock. A stale/foreign
+    release (e.g. after the TTL already handed the lock to a newer
+    execution) is a no-op and returns False."""
+    result = await pool.execute(
+        "DELETE FROM sesiones_bot_angelical WHERE telefono=$1 AND ejecucion=$2",
+        telefono, ejecucion,
+    )
+    return "DELETE 1" in result
