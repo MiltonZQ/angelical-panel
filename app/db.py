@@ -281,3 +281,76 @@ async def insert_control(
         nombre, telefono, email, fecha_date, hora_time, motivo,
     )
     return dict(row)
+
+
+# ── Reservas primera consulta (ledger) ──────────────────────
+#
+# Deduplication authority for validar_y_agendar() (app/cal.py). The
+# `estado='activa'` gate against a duplicate patient is a partial unique
+# index (ux_reserva_activa_paciente, migration 002 -- enabled only after the
+# S3 backfill), not a read-then-write check in this module. These helpers
+# only cover the ledger row lifecycle wired in S1; the T1/T2 ordering that
+# calls insert_reserva() before Cal.com and confirmar_reserva()/cerrar_reserva()
+# after is added in S2.
+
+async def insert_reserva(
+    pool: asyncpg.Pool,
+    telefono: str,
+    paciente: str,
+    fecha: str,
+    hora: str,
+) -> dict:
+    """T1: gate insert. estado defaults to 'activa', cal_uid/confirmed_at stay
+    NULL until confirmar_reserva() runs after the Cal.com call succeeds."""
+    from datetime import date as dt_date, time as dt_time
+    fecha_date = dt_date.fromisoformat(fecha)
+    hora_time = dt_time.fromisoformat(hora)
+    row = await pool.fetchrow(
+        """
+        INSERT INTO reservas_primera_angelical (telefono, paciente, fecha, hora)
+        VALUES ($1, $2, $3::date, $4::time)
+        RETURNING id, telefono_norm, paciente_norm, fecha, hora, estado, created_at
+        """,
+        telefono, paciente, fecha_date, hora_time,
+    )
+    return dict(row)
+
+
+async def confirmar_reserva(pool: asyncpg.Pool, reserva_id: int, cal_uid: str) -> bool:
+    """T2 success path: stamps the Cal.com booking id, leaves estado='activa'."""
+    result = await pool.execute(
+        "UPDATE reservas_primera_angelical SET cal_uid=$1, confirmed_at=now() "
+        "WHERE id=$2 AND estado='activa'",
+        cal_uid, reserva_id,
+    )
+    return "UPDATE 1" in result
+
+
+async def cerrar_reserva(
+    pool: asyncpg.Pool,
+    reserva_id: int,
+    estado: str,
+    motivo_cierre: str | None = None,
+) -> bool:
+    """Closes a ledger row (e.g. estado='fallida' compensation on Cal.com
+    failure, or estado='cancelada_externa' during reconcile)."""
+    result = await pool.execute(
+        "UPDATE reservas_primera_angelical SET estado=$1, motivo_cierre=$2 WHERE id=$3",
+        estado, motivo_cierre, reserva_id,
+    )
+    return "UPDATE 1" in result
+
+
+async def buscar_activa(pool: asyncpg.Pool, telefono_norm: str, paciente_norm: str) -> dict | None:
+    """Looks up the active ledger row (if any) for a normalized (phone, name)
+    pair. Used for reconcile lookups and pending-row sweeps."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, telefono, paciente, telefono_norm, paciente_norm, cal_uid,
+               fecha::date AS fecha, hora::time AS hora, estado, created_at, confirmed_at
+        FROM reservas_primera_angelical
+        WHERE telefono_norm = $1 AND paciente_norm = $2 AND estado = 'activa'
+        """,
+        telefono_norm, paciente_norm,
+    )
+    return dict(row) if row else None
