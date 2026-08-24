@@ -58,7 +58,7 @@ def horas_permitidas() -> list[str]:
     return horas
 
 
-def _a_hora_local(iso_utc: str) -> tuple[str, str]:
+def a_hora_local(iso_utc: str) -> tuple[str, str]:
     """'2026-08-25T14:00:00.000Z' -> ('2026-08-25', '09:00') en hora de Colombia."""
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(_TZ)
     return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
@@ -95,7 +95,7 @@ async def citas_por_dia(desde: str, hasta: str) -> dict[str, int]:
         for b in resp.json().get("data", []) or []:
             if b.get("status") in ("cancelled", "rejected"):
                 continue
-            fecha, _ = _a_hora_local(b["start"])
+            fecha, _ = a_hora_local(b["start"])
             conteo[fecha] = conteo.get(fecha, 0) + 1
     return conteo
 
@@ -130,7 +130,7 @@ async def slots_disponibles(desde: str, hasta: str) -> dict[str, list[str]]:
             inicio = s.get("start") if isinstance(s, dict) else s
             if not inicio:
                 continue
-            fecha, hora = _a_hora_local(inicio)
+            fecha, hora = a_hora_local(inicio)
             # Regla: día de atención (no festivo, no vacaciones, no jueves/lunes/domingo)
             if not is_valid_appointment_date(fecha):
                 continue
@@ -217,7 +217,7 @@ async def buscar_reserva_cal(uid: str) -> dict | None:
     return datos
 
 
-async def _buscar_uid_pendiente(pendiente: dict) -> str | None:
+async def buscar_uid_pendiente(pendiente: dict) -> str | None:
     """Targeted Cal.com lookup used only by expirar_pendientes(): did a
     booking for this exact stale pending row actually get created, even
     though our process died before confirmar_reserva() could stamp it?
@@ -354,7 +354,7 @@ async def validar_y_agendar(
     telefono_norm = normalizar_telefono(telefono)
     paciente_norm = normalizar_identidad(nombre)
 
-    await expirar_pendientes(pool, telefono_norm, paciente_norm, _buscar_uid_pendiente)
+    await expirar_pendientes(pool, telefono_norm, paciente_norm, buscar_uid_pendiente)
 
     try:
         reserva = await insert_reserva(pool, telefono, nombre, fecha, hora)

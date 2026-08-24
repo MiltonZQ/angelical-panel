@@ -403,3 +403,122 @@ async def expirar_pendientes(
         return cal_uid
     await cerrar_reserva(pool, stale["id"], "expirada", "pending_ttl_sin_reserva_en_cal")
     return None
+
+
+# ── Cutover: backfill, violator report, reconcile (S3) ──────────────────
+
+async def insert_reserva_backfill(
+    pool: asyncpg.Pool,
+    telefono: str,
+    paciente: str,
+    fecha: str,
+    hora: str,
+    cal_uid: str,
+) -> bool:
+    """Idempotent backfill insert. Unlike insert_reserva() (T1 gate), the
+    Cal.com booking already exists, so cal_uid/confirmed_at are stamped
+    immediately. ON CONFLICT targets ux_reserva_cal_uid (migration 001), so
+    re-running the backfill is a no-op for already-imported bookings.
+    Returns True when a new row was inserted, False otherwise."""
+    from datetime import date as dt_date, time as dt_time
+    fecha_date = dt_date.fromisoformat(fecha)
+    hora_time = dt_time.fromisoformat(hora)
+    result = await pool.execute(
+        """
+        INSERT INTO reservas_primera_angelical
+            (telefono, paciente, fecha, hora, cal_uid, confirmed_at)
+        VALUES ($1, $2, $3::date, $4::time, $5, now())
+        ON CONFLICT (cal_uid) WHERE cal_uid IS NOT NULL DO NOTHING
+        """,
+        telefono, paciente, fecha_date, hora_time, cal_uid,
+    )
+    return result == "INSERT 0 1"
+
+
+async def reservas_violadoras(pool: asyncpg.Pool) -> list[dict]:
+    """Read-only. Groups active rows by dedup key, returns only groups with
+    more than one row -- the duplicates the operator must resolve in Cal.com
+    before migration 002 can be applied. No write, no auto-resolution."""
+    rows = await pool.fetch(
+        """
+        SELECT telefono_norm, paciente_norm, count(*)::int AS n,
+               array_agg(cal_uid ORDER BY cal_uid) AS cal_uids
+        FROM reservas_primera_angelical
+        WHERE estado = 'activa'
+        GROUP BY telefono_norm, paciente_norm
+        HAVING count(*) > 1
+        ORDER BY telefono_norm, paciente_norm
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def listar_activas_confirmadas(pool: asyncpg.Pool) -> list[dict]:
+    """Active, confirmed ledger rows (have a cal_uid) -- candidates for the
+    hourly drift check in reconciliar_reservas()."""
+    rows = await pool.fetch(
+        """
+        SELECT id, cal_uid, telefono, paciente
+        FROM reservas_primera_angelical
+        WHERE estado = 'activa' AND confirmed_at IS NOT NULL AND cal_uid IS NOT NULL
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def listar_pendientes_vencidas(pool: asyncpg.Pool) -> list[dict]:
+    """Every stale pending row, across all pairs -- unlike
+    expirar_pendientes(), scoped to one pair before a new insert. Feeds the
+    hourly reconciliar_reservas() sweep."""
+    rows = await pool.fetch(
+        """
+        SELECT id, telefono, paciente, fecha::date AS fecha, hora::time AS hora
+        FROM reservas_primera_angelical
+        WHERE estado = 'activa' AND confirmed_at IS NULL
+          AND created_at < now() - ($1 || ' seconds')::interval
+        """,
+        str(RESERVA_PENDIENTE_TTL),
+    )
+    return [dict(r) for r in rows]
+
+
+async def reconciliar_reservas(pool: asyncpg.Pool, buscar_reserva_cal, buscar_cal_uid) -> dict:
+    """Hourly sweep (POST /api/reconciliar). Cal.com stays calendar of
+    record, so drift only ever flows Cal.com -> ledger:
+    - Confirmed rows whose Cal.com booking no longer exists -> closed as
+      'cancelada_externa' (same self-heal the on-read path performs, run
+      proactively).
+    - Stale pending rows -> adopted if Cal.com has the booking, else
+      expired (same rule as expirar_pendientes(), across every pair).
+
+    `buscar_reserva_cal`/`buscar_cal_uid` are injected async callables
+    (app.cal.buscar_reserva_cal / app.cal.buscar_uid_pendiente in
+    production) -- db.py never imports app.cal, avoiding a circular import.
+    """
+    activas = await listar_activas_confirmadas(pool)
+    pendientes = await listar_pendientes_vencidas(pool)
+
+    cerradas = 0
+    for fila in activas:
+        vigente = await buscar_reserva_cal(fila["cal_uid"])
+        if vigente is None:
+            await cerrar_reserva(pool, fila["id"], "cancelada_externa", "reconcile_hourly")
+            cerradas += 1
+
+    adoptadas = 0
+    expiradas = 0
+    for fila in pendientes:
+        cal_uid = await buscar_cal_uid(fila)
+        if cal_uid:
+            await confirmar_reserva(pool, fila["id"], cal_uid)
+            adoptadas += 1
+        else:
+            await cerrar_reserva(pool, fila["id"], "expirada", "pending_ttl_sin_reserva_en_cal")
+            expiradas += 1
+
+    return {
+        "revisadas": len(activas) + len(pendientes),
+        "cerradas": cerradas,
+        "adoptadas": adoptadas,
+        "expiradas": expiradas,
+    }

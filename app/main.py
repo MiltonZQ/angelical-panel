@@ -7,8 +7,8 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_SECRET
-from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error
-from app.cal import disponibilidad_para_bot, validar_y_agendar
+from app.db import close_pool, get_pool, get_control_slots, insert_control, is_valid_appointment_date, invalid_date_error, reconciliar_reservas
+from app.cal import buscar_uid_pendiente, buscar_reserva_cal, disponibilidad_para_bot, validar_y_agendar
 from app.admin import admin_router
 
 logger = logging.getLogger("uvicorn.error")
@@ -155,4 +155,18 @@ async def api_control_agendar(request: Request):
         return JSONResponse({"ok": True, "id": row["id"]})
     except Exception as e:
         logger.error(f"control-agendar error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.post("/api/reconciliar")
+async def api_reconciliar(_request: Request):
+    """Hourly drift sweep (n8n Schedule Trigger). Closes ledger rows whose
+    Cal.com booking no longer exists and adopts/expires stale pending rows
+    -- see reconciliar_reservas(). Idempotent: safe to call more often."""
+    try:
+        pool = await get_pool()
+        resultado = await reconciliar_reservas(pool, buscar_reserva_cal, buscar_uid_pendiente)
+        return JSONResponse({"ok": True, **resultado})
+    except Exception as e:
+        logger.error(f"reconciliar error: {e}")
         return JSONResponse({"ok": False, "error": str(e)})
